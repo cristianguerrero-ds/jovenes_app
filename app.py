@@ -34,12 +34,29 @@ def load_env_file():
 load_env_file()
 
 DB_NAME = os.getenv("SQLITE_DB_NAME", "jovenes_control.db")
-DEFAULT_NEON_URL = "postgresql://neondb_owner:npg_Js1y7mWLCQud@ep-wild-art-avaentzk-pooler.c-11.us-east-1.aws.neon.tech/jovenes_control?sslmode=require&channel_binding=require"
-DB_URL = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL") or DEFAULT_NEON_URL
+
+
+def get_database_url():
+    url = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL")
+    if url:
+        return url
+
+    try:
+        url = st.secrets["DATABASE_URL"]
+        if url:
+            return url
+    except Exception:
+        pass
+
+    return None
+
+
+DB_URL = get_database_url()
+IS_POSTGRES = bool(DB_URL and DB_URL.startswith(("postgres://", "postgresql://")))
 
 
 def get_connection():
-    if DB_URL.startswith(("postgres://", "postgresql://")):
+    if IS_POSTGRES:
         conn = psycopg2.connect(DB_URL)
         conn.autocommit = True
         return conn
@@ -47,7 +64,7 @@ def get_connection():
 
 
 def column_exists(conn, table_name, column_name):
-    if DB_URL.startswith(("postgres://", "postgresql://")):
+    if IS_POSTGRES:
         cur = conn.cursor()
         cur.execute(
             """
@@ -70,7 +87,7 @@ def init_db():
     c = conn.cursor()
 
     try:
-        if DB_URL.startswith(("postgres://", "postgresql://")):
+        if IS_POSTGRES:
             c.execute('''
                 CREATE TABLE IF NOT EXISTS jovenes (
                     id BIGSERIAL PRIMARY KEY,
@@ -156,7 +173,7 @@ def init_db():
             ]
             c.executemany(
                 "INSERT INTO jovenes (nombre, fecha_nacimiento, celular, es_nuevo, fecha_registro, activo) VALUES (%s, %s, %s, %s, %s, %s)"
-                if DB_URL.startswith(("postgres://", "postgresql://"))
+                if IS_POSTGRES
                 else "INSERT INTO jovenes (nombre, fecha_nacimiento, celular, es_nuevo, fecha_registro, activo) VALUES (?, ?, ?, ?, ?, ?)",
                 jovenes_prueba,
             )
@@ -167,15 +184,12 @@ def init_db():
             ]
             c.executemany(
                 "INSERT INTO asistencia (joven_id, fecha, asistio) VALUES (%s, %s, %s)"
-                if DB_URL.startswith(("postgres://", "postgresql://"))
+                if IS_POSTGRES
                 else "INSERT INTO asistencia (joven_id, fecha, asistio) VALUES (?, ?, ?)",
                 asistencias_prueba,
             )
 
-        if DB_URL.startswith(("postgres://", "postgresql://")):
-            conn.commit()
-        else:
-            conn.commit()
+        conn.commit()
     finally:
         conn.close()
 
