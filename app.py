@@ -7,6 +7,8 @@ import plotly.express as px
 import os
 import base64
 import re
+import io
+import csv
 
 # Configuración de la página
 st.set_page_config(
@@ -53,6 +55,101 @@ def get_database_url():
 
 DB_URL = get_database_url()
 IS_POSTGRES = bool(DB_URL and DB_URL.startswith(("postgres://", "postgresql://")))
+
+
+def parse_csv_to_rows_from_text(csv_text):
+    rows = []
+    reader = csv.DictReader(io.StringIO(csv_text))
+    for row in reader:
+        nombre = (row.get("nombre") or "").strip()
+        if not nombre:
+            continue
+
+        fecha_nacimiento = (row.get("fecha_nacimiento") or "").strip()
+        celular = (row.get("celular") or "").strip()
+        es_nuevo_raw = (row.get("es_nuevo") or row.get("nuevo") or "0").strip().lower()
+        es_nuevo = 1 if es_nuevo_raw in {"1", "si", "sí", "true", "t", "yes", "y"} else 0
+
+        rows.append({
+            "nombre": nombre,
+            "fecha_nacimiento": fecha_nacimiento,
+            "celular": celular,
+            "es_nuevo": es_nuevo,
+        })
+    return rows
+
+
+def build_urgency_summary(df_jovenes, df_asistencia):
+    if df_jovenes.empty:
+        return []
+
+    df = df_jovenes[df_jovenes["activo"] == 1].copy()
+    if df.empty:
+        return []
+
+    if df_asistencia.empty:
+        return [
+            {
+                "id": int(row["id"]),
+                "nombre": row["nombre"],
+                "urgencia": 3 if int(row["es_nuevo"]) == 1 else 0,
+                "detalle": "Joven nuevo" if int(row["es_nuevo"]) == 1 else "Sin alertas",
+            }
+            for _, row in df.iterrows()
+        ]
+
+    df_asistencia = df_asistencia.copy()
+    df_asistencia["fecha"] = pd.to_datetime(df_asistencia["fecha"], errors="coerce")
+    df_asistencia = df_asistencia.dropna(subset=["fecha"])
+    if df_asistencia.empty:
+        return []
+
+    fechas = sorted(df_asistencia["fecha"].unique())
+    summary = []
+    for _, row in df.iterrows():
+        joven_id = int(row["id"])
+        if int(row["es_nuevo"]) == 1:
+            summary.append({
+                "id": joven_id,
+                "nombre": row["nombre"],
+                "urgencia": 3,
+                "detalle": "Joven nuevo",
+            })
+            continue
+
+        count_missed = 0
+        for fecha in reversed(fechas):
+            asis = df_asistencia[(df_asistencia["joven_id"] == joven_id) & (df_asistencia["fecha"] == fecha)]
+            if asis.empty:
+                continue
+            estado = int(asis.iloc[0]["asistio"])
+            if estado == 1:
+                break
+            count_missed += 1
+
+        if count_missed >= 3:
+            urgencia = 3
+            detalle = "3 sábados sin asistir"
+        elif count_missed == 2:
+            urgencia = 2
+            detalle = "2 sábados sin asistir"
+        elif count_missed == 1:
+            urgencia = 1
+            detalle = "1 sábado sin asistir"
+        else:
+            urgencia = 0
+            detalle = "Sin alertas"
+
+        if urgencia > 0:
+            summary.append({
+                "id": joven_id,
+                "nombre": row["nombre"],
+                "urgencia": urgencia,
+                "detalle": detalle,
+            })
+
+    summary.sort(key=lambda item: (-item["urgencia"], item["nombre"]))
+    return summary
 
 
 def get_connection():
@@ -117,7 +214,15 @@ def init_db():
                     fidelidad INTEGER,
                     invitados INTEGER,
                     visitados INTEGER,
-                    resumen TEXT
+                    resumen TEXT,
+                    asistio_lider INTEGER DEFAULT 1,
+                    motivo_no_asistencia TEXT,
+                    auto_eval_visitados INTEGER DEFAULT 0,
+                    auto_eval_programacion INTEGER DEFAULT 0,
+                    auto_eval_seguimiento INTEGER DEFAULT 0,
+                    auto_eval_invitados INTEGER DEFAULT 0,
+                    auto_eval_nuevos INTEGER DEFAULT 0,
+                    auto_eval_resumen TEXT
                 )
             ''')
         else:
@@ -150,7 +255,15 @@ def init_db():
                     fidelidad INTEGER,
                     invitados INTEGER,
                     visitados INTEGER,
-                    resumen TEXT
+                    resumen TEXT,
+                    asistio_lider INTEGER DEFAULT 1,
+                    motivo_no_asistencia TEXT,
+                    auto_eval_visitados INTEGER DEFAULT 0,
+                    auto_eval_programacion INTEGER DEFAULT 0,
+                    auto_eval_seguimiento INTEGER DEFAULT 0,
+                    auto_eval_invitados INTEGER DEFAULT 0,
+                    auto_eval_nuevos INTEGER DEFAULT 0,
+                    auto_eval_resumen TEXT
                 )
             ''')
 
@@ -161,6 +274,24 @@ def init_db():
                 mensaje = str(exc).lower()
                 if "already exists" not in mensaje and "duplicate column" not in mensaje and "column already exists" not in mensaje:
                     raise
+
+        for column_name, column_sql in [
+            ("asistio_lider", "asistio_lider INTEGER DEFAULT 1"),
+            ("motivo_no_asistencia", "motivo_no_asistencia TEXT"),
+            ("auto_eval_visitados", "auto_eval_visitados INTEGER DEFAULT 0"),
+            ("auto_eval_programacion", "auto_eval_programacion INTEGER DEFAULT 0"),
+            ("auto_eval_seguimiento", "auto_eval_seguimiento INTEGER DEFAULT 0"),
+            ("auto_eval_invitados", "auto_eval_invitados INTEGER DEFAULT 0"),
+            ("auto_eval_nuevos", "auto_eval_nuevos INTEGER DEFAULT 0"),
+            ("auto_eval_resumen", "auto_eval_resumen TEXT"),
+        ]:
+            if not column_exists(conn, "evaluacion_equipo", column_name):
+                try:
+                    c.execute(f"ALTER TABLE evaluacion_equipo ADD COLUMN {column_sql}")
+                except Exception as exc:
+                    mensaje = str(exc).lower()
+                    if "already exists" not in mensaje and "duplicate column" not in mensaje and "column already exists" not in mensaje:
+                        raise
 
         c.execute("SELECT COUNT(*) FROM jovenes")
         if c.fetchone()[0] == 0:
@@ -329,7 +460,7 @@ def ejecutar_query(query, params=(), commit=False, fetch=True):
     conn = get_connection()
     c = conn.cursor()
 
-    if DB_URL.startswith(("postgres://", "postgresql://")):
+    if isinstance(DB_URL, str) and DB_URL.startswith(("postgres://", "postgresql://")):
         query = re.sub(r"(?<!:)(\?)", "%s", query)
 
     c.execute(query, params)
@@ -473,10 +604,11 @@ else:
     elif "Pastor" in rol:
         st.title("⛪ Panel de Control General del Pastor")
         
-        tab_eval, tab_asist_pastor, tab_eliminar_pastor, tab_dash = st.tabs([
+        tab_eval, tab_asist_pastor, tab_eliminar_pastor, tab_csv, tab_dash = st.tabs([
             "📊 Evaluación de Equipo", 
             "🔄 Asistencia", 
             "🗑️ Gestionar Listas de Miembros",
+            "📥 Importar CSV",
             "📈 Dashboard Estratégico"
         ])
         
@@ -491,7 +623,7 @@ else:
                 
             st.markdown("---")
             eval_previo = ejecutar_query(
-                "SELECT puntualidad, fidelidad, invitados, visitados, resumen FROM evaluacion_equipo WHERE lider = ? AND fecha = ?",
+                "SELECT puntualidad, fidelidad, invitados, visitados, resumen, asistio_lider, motivo_no_asistencia, auto_eval_visitados, auto_eval_programacion, auto_eval_seguimiento, auto_eval_invitados, auto_eval_nuevos, auto_eval_resumen FROM evaluacion_equipo WHERE lider = ? AND fecha = ?",
                 (lider_sel, fecha_eval_str)
             )
             
@@ -500,33 +632,65 @@ else:
             init_inv = int(eval_previo[0][2]) if eval_previo else 0
             init_vis = int(eval_previo[0][3]) if eval_previo else 0
             init_res = eval_previo[0][4] if eval_previo else ""
+            init_asistio = int(eval_previo[0][5]) if eval_previo else 1
+            init_motivo = eval_previo[0][6] if eval_previo else "asistio"
+            init_auto_visitados = eval_previo[0][7] == 1 if eval_previo else False
+            init_auto_programacion = eval_previo[0][8] == 1 if eval_previo else False
+            init_auto_seguimiento = eval_previo[0][9] == 1 if eval_previo else False
+            init_auto_invitados = eval_previo[0][10] == 1 if eval_previo else False
+            init_auto_nuevos = eval_previo[0][11] == 1 if eval_previo else False
+            init_auto_resumen = eval_previo[0][12] if eval_previo else ""
             
             with st.form("form_evaluacion"):
+                st.caption("Si el líder no asistió, puedes guardar la evaluación sin completar los indicadores de cumplimiento.")
+                lider_asistio = st.radio(
+                    "¿El líder asistió?",
+                    ["Sí", "No con excusa", "No sin excusa"],
+                    horizontal=True,
+                    index=0 if init_asistio == 1 else 1 if init_motivo == "con_excusa" else 2,
+                )
+                no_asistio = lider_asistio != "Sí"
+                if no_asistio:
+                    st.info("Se registrará la evaluación sin datos de cumplimiento para este sábado.")
+
                 col1, col2 = st.columns(2)
                 with col1:
-                    puntualidad = st.checkbox("⏱️ Puntualidad", value=init_punt)
-                    fidelidad = st.checkbox("📜 Fidelidad", value=init_fid)
+                    puntualidad = st.checkbox("⏱️ Puntualidad", value=init_punt, disabled=no_asistio)
+                    fidelidad = st.checkbox("📜 Fidelidad", value=init_fid, disabled=no_asistio)
                 with col2:
-                    invitados = st.number_input("👥 Jóvenes Invitados:", min_value=0, step=1, value=init_inv)
-                    visitados = st.number_input("🏠 Jóvenes Visitados:", min_value=0, step=1, value=init_vis)
-                    
-                resumen = st.text_area("📝 Casilla de Resumen:", value=init_res)
+                    invitados = st.number_input("👥 Jóvenes Invitados:", min_value=0, step=1, value=init_inv, disabled=no_asistio)
+                    visitados = st.number_input("🏠 Jóvenes Visitados:", min_value=0, step=1, value=init_vis, disabled=no_asistio)
+
+                st.markdown("---")
+                st.subheader("🧭 Autoevaluación de mi trabajo")
+                auto_visitados = st.checkbox("🏠 Jóvenes visitados", value=init_auto_visitados)
+                auto_programacion = st.checkbox("🗓️ Envíé la programación a tiempo", value=init_auto_programacion)
+                auto_seguimiento = st.checkbox("📞 Contacté o hice seguimiento a los líderes entre semana", value=init_auto_seguimiento)
+                auto_invitados = st.checkbox("🙌 Jóvenes invitados al culto", value=init_auto_invitados)
+                auto_nuevos = st.checkbox("👋 Contacté a los jóvenes nuevos del culto pasado", value=init_auto_nuevos)
+
+                auto_resumen = st.text_area("📝 Resumen de la autoevaluación:", value=init_auto_resumen)
+                resumen = st.text_area("📝 Casilla de Resumen General:", value=init_res)
                 guardar_eval = st.form_submit_button("💾 Guardar Evaluación")
                 
                 if guardar_eval:
-                    p_val = 1 if puntualidad else 0
-                    f_val = 1 if fidelidad else 0
+                    p_val = 0 if no_asistio else (1 if puntualidad else 0)
+                    f_val = 0 if no_asistio else (1 if fidelidad else 0)
+                    invit_val = 0 if no_asistio else invitados
+                    visit_val = 0 if no_asistio else visitados
+                    motivo_val = "asistio" if lider_asistio == "Sí" else "con_excusa" if lider_asistio == "No con excusa" else "sin_excusa"
+                    asistio_val = 1 if lider_asistio == "Sí" else 0
                     if eval_previo:
                         ejecutar_query(
-                            '''UPDATE evaluacion_equipo SET puntualidad = ?, fidelidad = ?, invitados = ?, visitados = ?, resumen = ?
+                            '''UPDATE evaluacion_equipo SET puntualidad = ?, fidelidad = ?, invitados = ?, visitados = ?, resumen = ?, asistio_lider = ?, motivo_no_asistencia = ?, auto_eval_visitados = ?, auto_eval_programacion = ?, auto_eval_seguimiento = ?, auto_eval_invitados = ?, auto_eval_nuevos = ?, auto_eval_resumen = ?
                                WHERE lider = ? AND fecha = ?''',
-                            (p_val, f_val, invitados, visitados, resumen, lider_sel, fecha_eval_str), commit=True, fetch=False
+                            (p_val, f_val, invit_val, visit_val, resumen, asistio_val, motivo_val, 1 if auto_visitados else 0, 1 if auto_programacion else 0, 1 if auto_seguimiento else 0, 1 if auto_invitados else 0, 1 if auto_nuevos else 0, auto_resumen, lider_sel, fecha_eval_str), commit=True, fetch=False
                         )
                     else:
                         ejecutar_query(
-                            '''INSERT INTO evaluacion_equipo (lider, fecha, puntualidad, fidelidad, invitados, visitados, resumen)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                            (lider_sel, fecha_eval_str, p_val, f_val, invitados, visitados, resumen), commit=True, fetch=False
+                            '''INSERT INTO evaluacion_equipo (lider, fecha, puntualidad, fidelidad, invitados, visitados, resumen, asistio_lider, motivo_no_asistencia, auto_eval_visitados, auto_eval_programacion, auto_eval_seguimiento, auto_eval_invitados, auto_eval_nuevos, auto_eval_resumen)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (lider_sel, fecha_eval_str, p_val, f_val, invit_val, visit_val, resumen, asistio_val, motivo_val, 1 if auto_visitados else 0, 1 if auto_programacion else 0, 1 if auto_seguimiento else 0, 1 if auto_invitados else 0, 1 if auto_nuevos else 0, auto_resumen), commit=True, fetch=False
                         )
                     st.success(f"Evaluación de {lider_sel} guardada.")
                         
@@ -618,11 +782,35 @@ else:
                         else:
                             st.error("Por seguridad, debes marcar la casilla de verificación.")
 
+        with tab_csv:
+            st.subheader("📥 Cargar múltiples jóvenes desde CSV")
+            st.caption("El archivo debe contener columnas: nombre, fecha_nacimiento, celular, es_nuevo")
+            uploaded_file = st.file_uploader("Selecciona un archivo CSV", type=["csv"], key="upload_csv_pastor")
+            if uploaded_file is not None:
+                csv_text = uploaded_file.getvalue().decode("utf-8")
+                rows = parse_csv_to_rows_from_text(csv_text)
+                if rows:
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if st.button("💾 Registrar jóvenes desde CSV", key="registrar_csv_pastor"):
+                        insertados = 0
+                        for row in rows:
+                            ejecutar_query(
+                                '''INSERT INTO jovenes (nombre, fecha_nacimiento, celular, es_nuevo, fecha_registro, activo)
+                                   VALUES (?, ?, ?, ?, ?, 1)''',
+                                (row["nombre"], row["fecha_nacimiento"], row["celular"], row["es_nuevo"], date.today().strftime("%Y-%m-%d")),
+                                commit=True, fetch=False
+                            )
+                            insertados += 1
+                        st.success(f"Se registraron {insertados} jóvenes desde el CSV.")
+                        st.rerun()
+                else:
+                    st.warning("No se encontraron filas válidas en el archivo. Verifica las columnas y el formato.")
+
         with tab_dash:
             st.subheader("📈 Métricas Clave y Rendimiento del Ministerio")
             df_jovenes = pd.DataFrame(ejecutar_query("SELECT * FROM jovenes"), columns=["id", "nombre", "fec_nac", "celular", "es_nuevo", "fec_reg", "activo"])
             df_asistencia = pd.DataFrame(ejecutar_query("SELECT * FROM asistencia"), columns=["id", "joven_id", "fecha", "asistio"])
-            df_eval = pd.DataFrame(ejecutar_query("SELECT * FROM evaluacion_equipo"), columns=["id", "lider", "fecha", "puntualidad", "fidelidad", "invitados", "visitados", "resumen"])
+            df_eval = pd.DataFrame(ejecutar_query("SELECT * FROM evaluacion_equipo"), columns=["id", "lider", "fecha", "puntualidad", "fidelidad", "invitados", "visitados", "resumen", "asistio_lider", "motivo_no_asistencia", "auto_eval_visitados", "auto_eval_programacion", "auto_eval_seguimiento", "auto_eval_invitados", "auto_eval_nuevos", "auto_eval_resumen"])
             
             col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
             with col_kpi1:
@@ -640,14 +828,37 @@ else:
                     st.metric("Promedio de Asistencia por Sábado", "0")
                     
             st.markdown("---")
+            st.subheader("🚨 Lista de urgencia pastoral")
+            urgencia = build_urgency_summary(df_jovenes, df_asistencia)
+            if urgencia:
+                st.dataframe(pd.DataFrame(urgencia), columns=["nombre", "urgencia", "detalle"], use_container_width=True, hide_index=True)
+            else:
+                st.info("No hay registros que requieran seguimiento urgente en este momento.")
+
+            st.markdown("---")
             col_g1, col_g2 = st.columns(2)
             with col_g1:
-                st.subheader("📅 Tendencia de Asistencia en los Cultos")
+                st.subheader("📅 Asistencia por semana")
                 if not df_asistencia.empty and (df_asistencia['asistio'] == 1).any():
-                    df_trend = df_asistencia[df_asistencia['asistio'] == 1].groupby('fecha').size().reset_index(name='Asistentes').sort_values(by='fecha')
-                    fig_trend = px.line(df_trend, x='fecha', y='Asistentes', markers=True, title="Asistentes reales por Sábado (Incluye registros históricos)")
-                    fig_trend.update_traces(line_color='#2E7D32', marker=dict(size=8))
-                    st.plotly_chart(fig_trend, use_container_width=True)
+                    asistencia_semana = df_asistencia[df_asistencia['asistio'] == 1].copy()
+                    asistencia_semana['fecha'] = pd.to_datetime(asistencia_semana['fecha'])
+                    asistencia_semana = asistencia_semana.sort_values(by='fecha')
+                    resumen_semanal = []
+                    for fecha, grupo in asistencia_semana.groupby('fecha'):
+                        nombres = []
+                        for _, row in grupo.iterrows():
+                            joven = df_jovenes[df_jovenes['id'] == int(row['joven_id'])]
+                            if not joven.empty:
+                                nombres.append(str(joven.iloc[0]['nombre']))
+                        resumen_semanal.append({
+                            'semana': fecha.strftime('%Y-%m-%d'),
+                            'asistentes': len(grupo),
+                            'nombres': ', '.join(nombres),
+                        })
+                    df_semana = pd.DataFrame(resumen_semanal)
+                    st.dataframe(df_semana, use_container_width=True, hide_index=True)
+                    fig_weekly = px.bar(df_semana, x='semana', y='asistentes', title='Asistentes por semana')
+                    st.plotly_chart(fig_weekly, use_container_width=True)
                 else:
                     st.info("Sin datos suficientes para graficar asistencia.")
             with col_g2:
