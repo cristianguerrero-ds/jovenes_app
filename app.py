@@ -660,17 +660,19 @@ else:
                 with col2:
                     invitados = st.number_input("👥 Jóvenes Invitados:", min_value=0, step=1, value=init_inv, disabled=no_asistio)
                     visitados = st.number_input("🏠 Jóvenes Visitados:", min_value=0, step=1, value=init_vis, disabled=no_asistio)
+                resumen = st.text_area("📝 Casilla de Resumen General:", value=init_res)
 
                 st.markdown("---")
                 st.subheader("🧭 Autoevaluación de mi trabajo")
-                auto_visitados = st.checkbox("🏠 Jóvenes visitados", value=init_auto_visitados)
-                auto_programacion = st.checkbox("🗓️ Envíé la programación a tiempo", value=init_auto_programacion)
-                auto_seguimiento = st.checkbox("📞 Contacté o hice seguimiento a los líderes entre semana", value=init_auto_seguimiento)
-                auto_invitados = st.checkbox("🙌 Jóvenes invitados al culto", value=init_auto_invitados)
-                auto_nuevos = st.checkbox("👋 Contacté a los jóvenes nuevos del culto pasado", value=init_auto_nuevos)
-
+                col3, col4 = st.columns(2)
+                with col3:
+                    auto_visitados = st.checkbox("🏠 Jóvenes visitados", value=init_auto_visitados)
+                    auto_programacion = st.checkbox("🗓️ Envíé la programación a tiempo", value=init_auto_programacion)
+                    auto_seguimiento = st.checkbox("📞 Contacté o hice seguimiento a los líderes entre semana", value=init_auto_seguimiento)
+                with col4:
+                    auto_invitados = st.checkbox("🙌 Jóvenes invitados al culto", value=init_auto_invitados)
+                    auto_nuevos = st.checkbox("👋 Contacté a los jóvenes nuevos del culto pasado", value=init_auto_nuevos)
                 auto_resumen = st.text_area("📝 Resumen de la autoevaluación:", value=init_auto_resumen)
-                resumen = st.text_area("📝 Casilla de Resumen General:", value=init_res)
                 guardar_eval = st.form_submit_button("💾 Guardar Evaluación")
                 
                 if guardar_eval:
@@ -831,7 +833,8 @@ else:
             st.subheader("🚨 Lista de urgencia pastoral")
             urgencia = build_urgency_summary(df_jovenes, df_asistencia)
             if urgencia:
-                st.dataframe(pd.DataFrame(urgencia), columns=["nombre", "urgencia", "detalle"], use_container_width=True, hide_index=True)
+                urgencia_df = pd.DataFrame(urgencia)[["nombre", "urgencia", "detalle"]]
+                st.dataframe(urgencia_df, use_container_width=True, hide_index=True)
             else:
                 st.info("No hay registros que requieran seguimiento urgente en este momento.")
 
