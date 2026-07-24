@@ -175,6 +175,7 @@ def sidebar_user_info():
                     row.get("auto_eval_visitados", 0),
                 ), axis=1,
             )
+            
 
         motivacion = get_leader_motivation(display_name, df_eval_sidebar)
 
