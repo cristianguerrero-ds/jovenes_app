@@ -182,6 +182,7 @@ def sidebar_user_info():
         st.sidebar.markdown(f"### 📊 Mi Evaluación")
 
         score_color = "🟢" if motivacion["promedio"] >= 4 else ("🟡" if motivacion["promedio"] >= 2.5 else "🔴")
+        st.sidebar.markdown("---")
         st.sidebar.markdown(
             f"<div style='text-align:center; font-size:1.8rem; font-weight:bold; "
             f"color:#e4be18;'>{score_color} {motivacion['promedio']:.2f}/5.0</div>",
@@ -194,7 +195,7 @@ def sidebar_user_info():
             f"margin: 0.3rem 0;'>{motivacion['mensaje']}</div>",
             unsafe_allow_html=True,
         )
-
+    st.sidebar.markdown("---")
     if st.sidebar.button("🚪 Cerrar Sesión"):
         st.session_state["autenticado"] = False
         st.session_state["rol"] = None
