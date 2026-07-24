@@ -154,7 +154,7 @@ def render_evaluacion_equipo():
         todos = list(lider_promedios.items()) + [("Pastor", prom_pastor)]
         cols_kpi = st.columns(len(todos))
         for idx, (nombre, prom) in enumerate(todos):
-            emoji_icon = "👑" if nombre == "Pastor" else "👤"
+            emoji_icon = "👩" if nombre == ("Jannice","Lizbeth") else ("👑" if nombre == "Pastor" else "👨")
             color_style = (
                 "background: linear-gradient(135deg, #1a3a6b 0%, #3a7abd 100%);"
                 if nombre == "Pastor"
