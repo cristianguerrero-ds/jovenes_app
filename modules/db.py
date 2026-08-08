@@ -190,9 +190,12 @@ def init_db():
                     descripcion TEXT,
                     prioridad INTEGER DEFAULT 1,
                     joven_nombre TEXT,
+                    joven_celular TEXT,
                     fecha_asignada TEXT,
+                    semana_inicio TEXT,
                     completada INTEGER DEFAULT 0,
-                    fecha_completada TEXT
+                    fecha_completada TEXT,
+                    comentario TEXT
                 )
             ''')
         else:
@@ -203,9 +206,12 @@ def init_db():
                     descripcion TEXT,
                     prioridad INTEGER DEFAULT 1,
                     joven_nombre TEXT,
+                    joven_celular TEXT,
                     fecha_asignada TEXT,
+                    semana_inicio TEXT,
                     completada INTEGER DEFAULT 0,
-                    fecha_completada TEXT
+                    fecha_completada TEXT,
+                    comentario TEXT
                 )
             ''')
 
@@ -231,6 +237,20 @@ def init_db():
             if not column_exists(conn, "evaluacion_equipo", column_name):
                 try:
                     c.execute(f"ALTER TABLE evaluacion_equipo ADD COLUMN {column_sql}")
+                except Exception as exc:
+                    mensaje = str(exc).lower()
+                    if "already exists" not in mensaje and "duplicate column" not in mensaje and "column already exists" not in mensaje:
+                        raise
+
+        # Migraciones agenda_tareas: agregar columnas faltantes
+        for column_name, column_sql in [
+            ("joven_celular", "joven_celular TEXT"),
+            ("semana_inicio", "semana_inicio TEXT"),
+            ("comentario", "comentario TEXT"),
+        ]:
+            if not column_exists(conn, "agenda_tareas", column_name):
+                try:
+                    c.execute(f"ALTER TABLE agenda_tareas ADD COLUMN {column_sql}")
                 except Exception as exc:
                     mensaje = str(exc).lower()
                     if "already exists" not in mensaje and "duplicate column" not in mensaje and "column already exists" not in mensaje:

@@ -39,6 +39,14 @@ class AppHelpersTests(unittest.TestCase):
         self.assertEqual(summary[1]["nombre"], "Luis")
         self.assertEqual(summary[1]["urgencia"], 1)
 
+    def test_calculate_evaluation_score_uses_weights_and_scale(self):
+        score = app_module.calculate_evaluation_score(True, True, 0, 0)
+        self.assertAlmostEqual(score, 2.5)
+
+    def test_get_score_status_marks_the_minimum_as_acceptable(self):
+        self.assertEqual(app_module.get_score_status(4.0), "Aceptable")
+        self.assertEqual(app_module.get_score_status(3.9), "Requiere mejora")
+
 
 if __name__ == "__main__":
     unittest.main()

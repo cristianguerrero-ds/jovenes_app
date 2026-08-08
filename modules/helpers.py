@@ -97,20 +97,39 @@ def get_score_status(score):
     return "Aceptable" if score >= 4 else "Requiere mejora"
 
 
-def auto_generate_agenda_tasks(df_jovenes, df_asistencia):
+def auto_generate_agenda_tasks(
+    df_jovenes, df_asistencia,
+    visited_recently_ids=None,
+    semana_inicio=None,
+):
     """
-    Genera automáticamente tareas de agenda según las inasistencias.
-    
+    Genera automáticamente eventos de agenda pastoral a partir del
+    ÚLTIMO registro de asistencia tomado.
+
     Lógica:
-    - Urgencia 3 (Alta): 3+ sábados sin asistir → Visita con Líder
-    - Urgencia 2 (Media): 2 inasistencias consecutivas → Visita pastoral
-    - Urgencia 1 (Baja): 1 sábado sin contactar → Llamada/mensaje
-    - Jóvenes nuevos → Contacto de bienvenida
-    - Tareas semanales: envío de programación, atención a líderes
+    - Toma la fecha más reciente de asistencia como referencia.
+    - Evalúa si cada joven asistió en ese último registro.
+    - Cuenta inasistencias consecutivas hacia atrás desde el último registro.
+    - Prioridad según es_nuevo + cantidad de inasistencias:
+        * es_nuevo=1 o >=3 inasistencias → Alta (3)
+        * 2 inasistencias → Media (2)
+        * 1 inasistencia → Baja (1)
+        * asistió → sin evento de inasistencia
+    - "Cuidado Pastoral" para quienes asistieron pero no han sido visitados
+      en el último mes (visited_recently_ids).
+    - Tareas semanales fijas: envío de programación, atención a líderes.
+    Author: cada evento incluye joven_celular.
     """
     tasks = []
     today = date.today()
     today_str = today.strftime("%Y-%m-%d")
+    semana = semana_inicio or today_str
+
+    def _celular(row):
+        try:
+            return str(row.get("celular") or "")
+        except Exception:
+            return ""
 
     # Tareas semanales fijas
     week_tasks = [
@@ -124,7 +143,9 @@ def auto_generate_agenda_tasks(df_jovenes, df_asistencia):
             "prioridad": prioridad,
             "joven_id": joven_id,
             "joven_nombre": None,
+            "joven_celular": "",
             "fecha_asignada": today_str,
+            "semana_inicio": semana,
         })
 
     if df_jovenes.empty or df_asistencia.empty:
@@ -141,23 +162,23 @@ def auto_generate_agenda_tasks(df_jovenes, df_asistencia):
         return tasks
 
     fechas = sorted(df_asist["fecha"].unique())
+    if not fechas:
+        return tasks
+
+    # Último registro de asistencia tomado
+    ultima_fecha = fechas[-1]
+    df_ultimo = df_asist[df_asist["fecha"] == ultima_fecha]
+    presentes_ultimo = set(df_ultimo[df_ultimo["asistio"] == 1]["joven_id"])
+
+    visited_ids = set(visited_recently_ids or [])
 
     for _, row in df.iterrows():
         joven_id = int(row["id"])
         nombre = row["nombre"]
         es_nuevo = int(row["es_nuevo"])
+        celular = _celular(row)
 
-        if es_nuevo == 1:
-            tasks.append({
-                "actividad": "📞 Contacto con joven nuevo",
-                "descripcion": f"Contactar a {nombre} para darle seguimiento y bienvenida",
-                "prioridad": 3,
-                "joven_id": joven_id,
-                "joven_nombre": nombre,
-                "fecha_asignada": today_str,
-            })
-            continue
-
+        # Contar inasistencias consecutivas hacia atrás desde el último registro
         count_missed = 0
         for fecha in reversed(fechas):
             asis = df_asist[(df_asist["joven_id"] == joven_id) & (df_asist["fecha"] == fecha)]
@@ -168,33 +189,70 @@ def auto_generate_agenda_tasks(df_jovenes, df_asistencia):
                 break
             count_missed += 1
 
-        if count_missed >= 3:
+        # Joven nuevo: contacto de bienvenida (prioridad alta)
+        if es_nuevo == 1:
             tasks.append({
-                "actividad": "🏠 Visita con Líder",
-                "descripcion": f"Visitar a {nombre} con su líder — tiene 3 sábados consecutivos sin asistir",
+                "actividad": "📞 Contacto con joven nuevo",
+                "descripcion": f"Contactar a {nombre} para darle seguimiento y bienvenida",
                 "prioridad": 3,
                 "joven_id": joven_id,
                 "joven_nombre": nombre,
+                "joven_celular": celular,
                 "fecha_asignada": today_str,
+                "semana_inicio": semana,
             })
-        elif count_missed == 2:
-            tasks.append({
-                "actividad": "🙏 Visita pastoral",
-                "descripcion": f"Visita pastoral a {nombre} — tiene 2 inasistencias consecutivas",
-                "prioridad": 2,
-                "joven_id": joven_id,
-                "joven_nombre": nombre,
-                "fecha_asignada": today_str,
-            })
-        elif count_missed == 1:
-            tasks.append({
-                "actividad": "📞 Llamada o mensaje",
-                "descripcion": f"Llamar o enviar mensaje a {nombre} — tiene 1 sábado sin contactar",
-                "prioridad": 1,
-                "joven_id": joven_id,
-                "joven_nombre": nombre,
-                "fecha_asignada": today_str,
-            })
+            continue
+
+        # ¿Asistió en el último registro?
+        asistio_ultimo = joven_id in presentes_ultimo
+
+        if not asistio_ultimo:
+            if count_missed >= 3:
+                tasks.append({
+                    "actividad": "🏠 Visita con Líder",
+                    "descripcion": f"Visitar a {nombre} con su líder — tiene {count_missed} sábados consecutivos sin asistir",
+                    "prioridad": 3,
+                    "joven_id": joven_id,
+                    "joven_nombre": nombre,
+                    "joven_celular": celular,
+                    "fecha_asignada": today_str,
+                    "semana_inicio": semana,
+                })
+            elif count_missed == 2:
+                tasks.append({
+                    "actividad": "🙏 Visita pastoral",
+                    "descripcion": f"Visita pastoral a {nombre} — tiene 2 inasistencias consecutivas",
+                    "prioridad": 2,
+                    "joven_id": joven_id,
+                    "joven_nombre": nombre,
+                    "joven_celular": celular,
+                    "fecha_asignada": today_str,
+                    "semana_inicio": semana,
+                })
+            elif count_missed == 1:
+                tasks.append({
+                    "actividad": "📞 Llamada o mensaje",
+                    "descripcion": f"Llamar o enviar mensaje a {nombre} — tiene 1 sábado sin contactar",
+                    "prioridad": 1,
+                    "joven_id": joven_id,
+                    "joven_nombre": nombre,
+                    "joven_celular": celular,
+                    "fecha_asignada": today_str,
+                    "semana_inicio": semana,
+                })
+        else:
+            # Asistió pero no ha sido visitado en el mes → Cuidado Pastoral
+            if joven_id not in visited_ids:
+                tasks.append({
+                    "actividad": "🙏 Cuidado Pastoral",
+                    "descripcion": f"Visita de cuidado pastoral a {nombre} — asistió pero no ha sido visitado en el mes",
+                    "prioridad": 2,
+                    "joven_id": joven_id,
+                    "joven_nombre": nombre,
+                    "joven_celular": celular,
+                    "fecha_asignada": today_str,
+                    "semana_inicio": semana,
+                })
 
     return tasks
 

@@ -201,6 +201,12 @@ def render_evaluacion_equipo():
     init_res = eval_previo[0][4] if eval_previo else ""
     init_asistio = int(eval_previo[0][5]) if eval_previo else 1
     init_motivo = eval_previo[0][6] if eval_previo else "asistio"
+    # Si el líder no asistió, los indicadores deben mostrar valores en cero
+    if init_asistio == 0:
+        init_punt = False
+        init_fid = False
+        init_inv = 0
+        init_vis = 0
 
     st.markdown(f'<div class="content-card">', unsafe_allow_html=True)
 
@@ -238,7 +244,10 @@ def render_evaluacion_equipo():
         resumen = st.text_area("📝 Resumen General:", value=init_res, placeholder="Notas y observaciones...")
 
         # Score en vivo
-        score_actual = calculate_evaluation_score(puntualidad, fidelidad, invitados, visitados)
+        if no_asistio:
+            score_actual = 0.0
+        else:
+            score_actual = calculate_evaluation_score(puntualidad, fidelidad, invitados, visitados)
         st.metric("📊 Evaluación del Líder (0–5)", f"{score_actual:.2f}", help="4.0 es la nota mínima aceptable")
 
         guardar_eval = st.form_submit_button("💾 Guardar Evaluación del Líder", use_container_width=True)
